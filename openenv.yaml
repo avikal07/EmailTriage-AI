@@ -1,0 +1,212 @@
+name: email-triage-environment
+version: "1.0.0"
+description: >
+  An OpenEnv-compatible environment where an AI agent triages incoming emails
+  by classifying them, assigning priority levels, and generating appropriate replies.
+  Three difficulty levels are supported as distinct tasks.
+
+author: Email Triage Team
+license: MIT
+
+environment:
+  type: sequential
+  episodic: true
+  deterministic: true
+  max_steps_per_episode: 18
+
+observation_schema:
+  type: object
+  properties:
+    email:
+      type: object
+      description: The current email to be triaged
+      properties:
+        id:
+          type: string
+          description: Unique email identifier
+        subject:
+          type: string
+          description: Email subject line
+        body:
+          type: string
+          description: Full email body text
+        sender:
+          type: string
+          description: Sender email address
+    task_id:
+      type: integer
+      enum: [1, 2, 3]
+      description: Current task difficulty level
+    task_description:
+      type: string
+      description: Human-readable description of the current task
+    step_number:
+      type: integer
+      description: Current step index (0-based)
+    total_steps:
+      type: integer
+      description: Total number of emails in the episode
+    current_score:
+      type: number
+      minimum: -1.0
+      maximum: 1.0
+      description: Running average score for the episode so far
+
+action_schema:
+  type: object
+  required:
+    - email_id
+    - classification
+  properties:
+    email_id:
+      type: string
+      description: Must match the current email's id
+    classification:
+      type: string
+      enum: [spam, important, normal]
+      description: Email classification label
+    priority:
+      type: string
+      enum: [low, medium, high]
+      nullable: true
+      description: Priority level (required for tasks 2 and 3)
+    reply:
+      type: string
+      nullable: true
+      description: Generated reply text (required for task 3 when email is important)
+
+reward_schema:
+  type: number
+  minimum: -0.7
+  maximum: 1.0
+  description: Reward for a single step action
+
+tasks:
+  - id: 1
+    name: "Email Classification"
+    difficulty: easy
+    description: >
+      Classify each email as spam, important, or normal.
+      Only classification field is evaluated.
+    scoring:
+      classification_correct: +0.4
+      classification_wrong: -0.2
+      spam_misclassified_as_important: -0.3
+      important_misclassified_as_spam: -0.3
+    max_score_per_email: 0.4
+    required_fields:
+      - classification
+
+  - id: 2
+    name: "Classification + Priority Assignment"
+    difficulty: medium
+    description: >
+      Classify each email AND assign a priority level (low/medium/high).
+      Both classification and priority are evaluated.
+    scoring:
+      classification_correct: +0.4
+      classification_wrong: -0.2
+      priority_correct: +0.3
+      priority_off_by_one: +0.12
+      priority_off_by_two: -0.1
+      missing_priority: -0.1
+    max_score_per_email: 0.7
+    required_fields:
+      - classification
+      - priority
+
+  - id: 3
+    name: "Full Triage: Classify + Priority + Reply"
+    difficulty: hard
+    description: >
+      Complete email triage: classify, assign priority, and generate
+      professional replies for important emails. Penalized for replying to spam.
+    scoring:
+      classification_correct: +0.4
+      classification_wrong: -0.2
+      priority_correct: +0.3
+      priority_off_by_one: +0.12
+      reply_similarity_high: +0.3
+      reply_similarity_medium: +0.18
+      reply_similarity_low: +0.09
+      reply_similarity_minimal: +0.03
+      reply_to_spam_penalty: -0.15
+      missing_reply_for_important: -0.1
+    max_score_per_email: 1.0
+    required_fields:
+      - classification
+      - priority
+      - reply
+
+api_endpoints:
+  reset:
+    method: POST
+    path: /reset
+    description: Reset environment and start new episode
+    request_body:
+      task_id:
+        type: integer
+        enum: [1, 2, 3]
+        default: 1
+    response: observation_schema
+
+  step:
+    method: POST
+    path: /step
+    description: Submit action for current email and advance environment
+    request_body: action_schema
+    response:
+      observation:
+        description: Next observation (null if done)
+        schema: observation_schema
+      reward:
+        type: number
+        description: Reward for this step
+      done:
+        type: boolean
+        description: Whether episode has ended
+      info:
+        type: object
+        description: Additional info including grade breakdown
+
+  state:
+    method: GET
+    path: /state
+    description: Get current environment state
+    response:
+      task_id: integer
+      task_description: string
+      step_number: integer
+      total_steps: integer
+      current_score: number
+      total_reward: number
+      done: boolean
+      emails_processed: integer
+      current_email: object
+      history: array
+
+dataset:
+  source: data/emails.json
+  total_emails: 18
+  distribution:
+    spam: 5
+    important: 8
+    normal: 5
+  priority_distribution:
+    low: 10
+    medium: 4
+    high: 7
+
+baseline_results:
+  task_1:
+    random_agent: 0.06
+    rule_based: 0.31
+    gpt4o_mini: 0.38
+  task_2:
+    random_agent: 0.02
+    rule_based: 0.22
+    gpt4o_mini: 0.61
+  task_3:
+    random_agent: -0.05
+    rule_based: 0.18
+    gpt4o_mini: 0.74
